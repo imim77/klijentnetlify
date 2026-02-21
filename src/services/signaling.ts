@@ -108,10 +108,10 @@ export class SignalingConnection {
     }
 
     private get _endpoint(){
-        const protocol = location.protocol.startsWith('https') ? 'wss' : 'ws';
-        const port = '9000';
-        return `${protocol}://${location.hostname}:${port}/ws`;
-        //return "https://apigotesting.onrender.com/ws"
+        //const protocol = location.protocol.startsWith('https') ? 'wss' : 'ws';
+        //const port = '9000';
+        //return `${protocol}://${location.hostname}:${port}/ws`;
+        return "https://apigotesting.onrender.com/ws"
     }
 
     private _isConnected(){
