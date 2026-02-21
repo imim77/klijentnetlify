@@ -8,11 +8,12 @@
   } from '../services/signaling';
 
   let signaling: SignalingConnection | null = null;
-  let peerManager: PeerManager | null = null;
+  let peerManager: PeerManager | null = $state(null);
 
   let me: ClientInfo | null = $state(null);
   let peers: ClientInfo[] = $state([]);
   let lastError = $state('');
+  let selectedFiles: FileList | null = null;
 
   function shouldInitiate(peerId: string): boolean {
     if (!me) return false;
@@ -90,6 +91,34 @@
     peerManager.startSession(peerId);
   }
 
+  function onFilesSelected(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    selectedFiles = input.files;
+  }
+
+  function sendSelectedFiles() {
+    if (!peerManager) {
+      console.warn('[UI] peer manager not ready');
+      return;
+    }
+
+    if (!selectedFiles || selectedFiles.length === 0) {
+      console.warn('[UI] no files selected');
+      return;
+    }
+
+    const result = peerManager.sendFilesToConnectedPeers(selectedFiles);
+    if (result.peers === 0) {
+      console.warn('[UI] no connected peers to send files to');
+      return;
+    }
+
+    console.log('[UI] queued files for connected peers', {
+      files: result.files,
+      peers: result.peers,
+    });
+  }
+
   onMount(() => {
     signaling = new SignalingConnection({
       info: { alias: `Browser-${Math.floor(Math.random() * 1000)}`, deviceType: 'Browser' },
@@ -160,6 +189,13 @@
       {/each}
     </ul>
   {/if}
+</section>
+
+<section>
+  <h2>File Transfer</h2>
+  <p>Connected peers: {peerManager?.getConnectedPeerCount() ?? 0}</p>
+  <input type="file" multiple onchange={onFilesSelected} />
+  <button onclick={sendSelectedFiles}>Send Selected Files</button>
 </section>
 
 {#if lastError}

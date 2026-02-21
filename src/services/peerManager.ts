@@ -9,6 +9,7 @@ export class PeerManager {
     signaling: SignalingConnection;
     peersBySessionId: Map<string, Peer> = new Map();
     pendingCandidatesBySessionId: Map<string, RTCIceCandidateInit[]> = new Map();
+    
 
     _onPeerCreated?: (peer: Peer) => void;
     _onPeerRemoved?: (peer: Peer) => void;
@@ -86,6 +87,31 @@ export class PeerManager {
             this.pendingCandidatesBySessionId.delete(sessionId);
             this._onPeerRemoved?.(peer);
         }
+    }
+
+    getConnectedPeers(): Peer[] {
+        return Array.from(this.peersBySessionId.values()).filter((peer) => peer.dc?.readyState === 'open');
+    }
+
+    getConnectedPeerCount(): number {
+        return this.getConnectedPeers().length;
+    }
+
+    sendFilesToConnectedPeers(files: FileList | File[]): { peers: number; files: number } {
+        const list = Array.isArray(files) ? files : Array.from(files);
+        if (list.length === 0) {
+            return { peers: 0, files: 0 };
+        }
+
+        const peers = this.getConnectedPeers();
+        for (const peer of peers) {
+            peer.sendFiles(list);
+        }
+
+        return {
+            peers: peers.length,
+            files: list.length,
+        };
     }
 
     destroy(): void {
