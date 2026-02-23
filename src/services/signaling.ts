@@ -161,7 +161,8 @@ function resolveSignalingEndpoint(explicit?: string): string {
     }
 
     const protocol = location.protocol.startsWith('https') ? 'wss' : 'ws';
-    return `${protocol}://${location.hostname}:9000/ws`;
+    //return `${protocol}://${location.hostname}:9000/ws`;
+    return "https://apigotesting.onrender.com/ws";
 }
 
 function normalizeUrl(raw: string): string | null {
