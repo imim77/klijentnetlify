@@ -52,7 +52,6 @@
     "estree-walker": "^3.0.3",
     "expect-type": "^1.3.0",
     "fdir": "^6.5.0",
-    "fsevents": "^2.3.3",
     "has-flag": "^4.0.0",
     "html-encoding-sniffer": "^6.0.0",
     "html-escaper": "^2.0.2",
