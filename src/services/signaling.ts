@@ -23,7 +23,7 @@ export class SignalingConnection {
     }) {
         this.info = opts.info ?? null; 
         this._iceMode = resolveIceMode(opts.iceMode);
-        this.url = resolveSignalingEndpoint(opts.endpoint);
+        this.url = "https://apigotesting.onrender.com/ws"//resolveSignalingEndpoint(opts.endpoint);
 
         this._onOpen = opts.onOpen;
         this._onMessage = opts.onMessage;
