@@ -17,15 +17,40 @@ export class Peer {
     isConnected = false;
     isCaller = false;
     iceServers: IceServerInfo[] = [];
+    onConnectionStateChange?: (state: RTCPeerConnectionState) => void;
+    onIceStateChange?: (state: RTCIceConnectionState, snapshot: IceSnapshot) => void;
+    forceLoopbackHostCandidates = false;
 
     private pendingCandidates: RTCIceCandidateInit[] = [];
+    private pendingEndOfCandidates = false;
     private lastConnectionState: RTCPeerConnectionState | null = null;
+    private iceRestartAttempts = 0;
+    private readonly maxIceRestartAttempts = 1;
+    private localCandidateCounts: Record<string, number> = {};
+    private remoteCandidateCounts: Record<string, number> = {};
     private readonly fileTransfer: FileTransfer;
 
-    constructor({ signaling, peerId, sessionId }: { signaling: SignalingConnection; peerId: string; sessionId: string }) {
+    constructor({
+        signaling,
+        peerId,
+        sessionId,
+        onConnectionStateChange,
+        onIceStateChange,
+        forceLoopbackHostCandidates,
+    }: {
+        signaling: SignalingConnection;
+        peerId: string;
+        sessionId: string;
+        onConnectionStateChange?: (state: RTCPeerConnectionState) => void;
+        onIceStateChange?: (state: RTCIceConnectionState, snapshot: IceSnapshot) => void;
+        forceLoopbackHostCandidates?: boolean;
+    }) {
         this.signaling = signaling;
         this.peerId = peerId;
         this.sessionId = sessionId;
+        this.onConnectionStateChange = onConnectionStateChange;
+        this.onIceStateChange = onIceStateChange;
+        this.forceLoopbackHostCandidates = forceLoopbackHostCandidates ?? false;
 
         this.fileTransfer = new FileTransfer({
             peerId,
@@ -64,18 +89,51 @@ export class Peer {
         });
 
         this.pc.onicecandidate = (event) => {
-            if (!event.candidate) return;
+            if (!event.candidate) {
+                console.log('[WebRTC] local ICE gathering complete', {
+                    sessionId: this.sessionId,
+                    peerId: this.peerId,
+                });
+                this.signaling.send({
+                    type: 'CANDIDATE',
+                    sessionId: this.sessionId,
+                    target: this.peerId,
+                    candidate: null,
+                });
+                return;
+            }
+
+            const candidateType = event.candidate.type || detectCandidateType(event.candidate.candidate);
+            this.bumpCandidate(this.localCandidateCounts, candidateType);
+
+            const outboundCandidate = this.forceLoopbackHostCandidates
+                ? rewriteMdnsHostToLoopback(event.candidate.toJSON())
+                : event.candidate.toJSON();
 
             console.log('[WebRTC] local ICE candidate', {
                 sessionId: this.sessionId,
                 peerId: this.peerId,
+                type: candidateType,
+                forcedLoopback: this.forceLoopbackHostCandidates,
             });
 
             this.signaling.send({
                 type: 'CANDIDATE',
                 sessionId: this.sessionId,
                 target: this.peerId,
-                candidate: event.candidate,
+                candidate: outboundCandidate,
+            });
+        };
+
+        this.pc.onicecandidateerror = (event) => {
+            console.warn('[WebRTC] local ICE candidate error', {
+                sessionId: this.sessionId,
+                peerId: this.peerId,
+                address: event.address,
+                port: event.port,
+                errorCode: event.errorCode,
+                errorText: event.errorText,
+                url: event.url,
             });
         };
 
@@ -88,6 +146,7 @@ export class Peer {
             if (!state || state === this.lastConnectionState) return;
 
             this.lastConnectionState = state;
+            this.onConnectionStateChange?.(state);
             if (state === 'connected') {
                 this.isConnected = true;
                 console.log('[WebRTC] peer connected', {
@@ -111,10 +170,27 @@ export class Peer {
         };
 
         this.pc.oniceconnectionstatechange = () => {
-            console.log('[WebRTC] ICE connection state:', this.pc?.iceConnectionState, {
+            const iceState = this.pc?.iceConnectionState;
+            console.log('[WebRTC] ICE connection state:', iceState, {
                 sessionId: this.sessionId,
                 peerId: this.peerId,
+                localCandidates: this.localCandidateCounts,
+                remoteCandidates: this.remoteCandidateCounts,
             });
+            if (!iceState) return;
+            this.onIceStateChange?.(iceState, this.getIceSnapshot());
+            if (iceState === 'connected' || iceState === 'completed') {
+                this.iceRestartAttempts = 0;
+            }
+            if (iceState === 'failed') {
+                console.warn('[WebRTC] ICE failed snapshot', {
+                    sessionId: this.sessionId,
+                    peerId: this.peerId,
+                    localCandidates: this.localCandidateCounts,
+                    remoteCandidates: this.remoteCandidateCounts,
+                });
+                void this.tryIceRestart();
+            }
         };
 
         this.pc.ondatachannel = (event) => {
@@ -200,12 +276,28 @@ export class Peer {
         }
     }
 
-    async HandleCandidate(candidate: RTCIceCandidateInit | RTCIceCandidate): Promise<void> {
+    async HandleCandidate(candidate: RTCIceCandidateInit | RTCIceCandidate | null): Promise<void> {
         if (!this.pc) return;
 
         try {
-            const normalized = candidate instanceof RTCIceCandidate ? candidate.toJSON() : candidate;
+            if (candidate === null) {
+                if (!this.pc.remoteDescription) {
+                    this.pendingEndOfCandidates = true;
+                    return;
+                }
+                await this.pc.addIceCandidate(null);
+                console.log('[WebRTC] received end-of-candidates', {
+                    sessionId: this.sessionId,
+                    peerId: this.peerId,
+                });
+                return;
+            }
+
+            const normalizedRaw = candidate instanceof RTCIceCandidate ? candidate.toJSON() : candidate;
+            const normalized = this.forceLoopbackHostCandidates ? rewriteMdnsHostToLoopback(normalizedRaw) : normalizedRaw;
             if (!normalized?.candidate) return;
+
+            this.bumpCandidate(this.remoteCandidateCounts, detectCandidateType(normalized.candidate));
 
             if (!this.pc.remoteDescription) {
                 console.log('[WebRTC] queue remote ICE candidate until remote description', {
@@ -240,6 +332,7 @@ export class Peer {
 
         if (this.pc) {
             this.pc.onicecandidate = null;
+            this.pc.onicecandidateerror = null;
             this.pc.onconnectionstatechange = null;
             this.pc.oniceconnectionstatechange = null;
             this.pc.ondatachannel = null;
@@ -250,16 +343,33 @@ export class Peer {
         this.isConnected = false;
         this.lastConnectionState = null;
         this.pendingCandidates = [];
+        this.pendingEndOfCandidates = false;
+        this.iceRestartAttempts = 0;
+        this.onConnectionStateChange?.('closed');
+        this.onIceStateChange?.('closed', this.getIceSnapshot());
     }
 
-    private async createOffer() {
+    private bumpCandidate(counter: Record<string, number>, type: string): void {
+        const key = type || 'unknown';
+        counter[key] = (counter[key] ?? 0) + 1;
+    }
+
+    private getIceSnapshot(): IceSnapshot {
+        return {
+            localCandidates: { ...this.localCandidateCounts },
+            remoteCandidates: { ...this.remoteCandidateCounts },
+        };
+    }
+
+    private async createOffer(options?: RTCOfferOptions) {
         if (!this.pc) return;
         try {
-            const offer = await this.pc.createOffer();
+            const offer = await this.pc.createOffer(options);
             await this.pc.setLocalDescription(offer);
             console.log('[WebRTC] sending offer', {
                 sessionId: this.sessionId,
                 peerId: this.peerId,
+                iceRestart: options?.iceRestart === true,
             });
             this.signaling.send({
                 type: 'OFFER',
@@ -284,7 +394,7 @@ export class Peer {
     }
 
     private async flushPendingCandidates(): Promise<void> {
-        if (!this.pc || !this.pc.remoteDescription || this.pendingCandidates.length === 0) {
+        if (!this.pc || !this.pc.remoteDescription) {
             return;
         }
 
@@ -302,6 +412,47 @@ export class Peer {
                 console.error('Failed to flush ICE candidate', error);
             }
         }
+
+        if (!this.pendingEndOfCandidates) {
+            return;
+        }
+
+        this.pendingEndOfCandidates = false;
+        try {
+            await this.pc.addIceCandidate(null);
+            console.log('[WebRTC] flush queued end-of-candidates', {
+                sessionId: this.sessionId,
+                peerId: this.peerId,
+            });
+        } catch (error) {
+            console.error('Failed to flush end-of-candidates', error);
+        }
+    }
+
+    private async tryIceRestart(): Promise<void> {
+        if (!this.pc || !this.isCaller) {
+            return;
+        }
+        if (this.iceRestartAttempts >= this.maxIceRestartAttempts) {
+            return;
+        }
+        if (this.pc.signalingState !== 'stable') {
+            console.warn('[WebRTC] skip ICE restart while signaling not stable', {
+                sessionId: this.sessionId,
+                peerId: this.peerId,
+                signalingState: this.pc.signalingState,
+            });
+            return;
+        }
+
+        this.iceRestartAttempts += 1;
+        this.pc.restartIce();
+        console.warn('[WebRTC] attempting ICE restart', {
+            sessionId: this.sessionId,
+            peerId: this.peerId,
+            attempt: this.iceRestartAttempts,
+        });
+        await this.createOffer({ iceRestart: true });
     }
 
     private async logSelectedCandidatePair(): Promise<void> {
@@ -373,6 +524,46 @@ export class Peer {
         anchor.remove();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
+}
+
+type IceSnapshot = {
+    localCandidates: Record<string, number>;
+    remoteCandidates: Record<string, number>;
+};
+
+function detectCandidateType(rawCandidate: string | undefined): string {
+    if (!rawCandidate) return 'unknown';
+    const parts = rawCandidate.split(' ');
+    const typIndex = parts.indexOf('typ');
+    if (typIndex === -1 || typIndex + 1 >= parts.length) {
+        return 'unknown';
+    }
+    return parts[typIndex + 1] || 'unknown';
+}
+
+function rewriteMdnsHostToLoopback(candidate: RTCIceCandidateInit): RTCIceCandidateInit {
+    if (!candidate.candidate) {
+        return candidate;
+    }
+
+    const parts = candidate.candidate.split(' ');
+    if (parts.length < 8) {
+        return candidate;
+    }
+
+    const type = detectCandidateType(candidate.candidate);
+    const address = parts[4] || '';
+    if (type !== 'host' || !address.endsWith('.local')) {
+        return candidate;
+    }
+
+    const rewritten = [...parts];
+    rewritten[4] = '127.0.0.1';
+
+    return {
+        ...candidate,
+        candidate: rewritten.join(' '),
+    };
 }
 
 class FileTransfer {
@@ -458,7 +649,7 @@ class FileTransfer {
         this.lastProgress = 0;
     }
 
-    private async dequeueFile(): Promise<void> {
+    private async dequeueFile() {
         const file = this.filesQueue.shift();
         if (!file) {
             this.busy = false;
@@ -469,7 +660,7 @@ class FileTransfer {
         await this.sendFile(file);
     }
 
-    private async sendFile(file: File): Promise<void> {
+    private async sendFile(file: File) {
         this.sendJSON({
             type: 'header',
             name: file.name,
@@ -486,50 +677,49 @@ class FileTransfer {
         await this.chunker.nextPartition();
     }
 
-    private onPartitionEnd(offset: number): void {
+    private onPartitionEnd(offset: number){
         this.sendJSON({ type: 'partition', offset });
     }
 
-    private onReceivedPartitionEnd(offset: number): void {
+    private onReceivedPartitionEnd(offset: number){
         this.sendJSON({ type: 'partition-received', offset });
     }
 
-    private async sendNextPartition(): Promise<void> {
+    private async sendNextPartition() {
         if (!this.chunker || this.chunker.isFileEnd) {
             return;
         }
         await this.chunker.nextPartition();
     }
 
-    private sendProgress(progress: number): void {
+    private sendProgress(progress: number){
         this.sendJSON({ type: 'progress', progress });
     }
 
-    private onDownloadProgress(progress: number): void {
+    private onDownloadProgress(progress: number){
         this.onProgress?.(progress);
     }
 
-    private onFileHeader(header: Extract<TransferMessage, { type: 'header' }>): void {
+    private onFileHeader(header: Extract<TransferMessage, { type: 'header' }>){
         this.lastProgress = 0;
         this.digester?.abort(new Error('new file header arrived before previous file completed'));
-        this.digester = new FileDigester(
-            {
-                name: header.name,
-                mime: header.mime,
-                size: header.size,
-            },
-            (file) => {
+        this.digester = new FileDigester({
+            name: header.name,
+            mime: header.mime,
+            size: header.size,
+        });
+
+        this.digester.done
+            .then((file) => {
                 this.onFileReceived?.(file);
                 this.sendJSON({ type: 'transfer-complete' });
-            },
-        );
-
-        this.digester.done.catch((error) => {
+            })
+            .catch((error) => {
             console.error('[WebRTC] file digester failed', { peerId: this.peerId, error });
-        });
+            });
     }
 
-    private async onChunkReceived(chunk: ArrayBuffer | Blob): Promise<void> {
+    private async onChunkReceived(chunk: ArrayBuffer | Blob){
         if (!this.digester) {
             console.warn('[WebRTC] received chunk without file header', { peerId: this.peerId });
             return;
@@ -550,7 +740,7 @@ class FileTransfer {
         this.sendProgress(progress);
     }
 
-    private async onTransferCompletedByPeer(): Promise<void> {
+    private async onTransferCompletedByPeer(){
         this.onDownloadProgress(1);
         this.chunker = null;
         this.busy = false;
@@ -558,7 +748,7 @@ class FileTransfer {
         await this.dequeueFile();
     }
 
-    private sendJSON(message: TransferMessage): void {
+    private sendJSON(message: TransferMessage){
         this.sendRaw(JSON.stringify(message));
     }
 }

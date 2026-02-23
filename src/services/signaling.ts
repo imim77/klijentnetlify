@@ -4,6 +4,7 @@ export class SignalingConnection {
     info: ClientInfoWithoutId | null;
     url: string = this._endpoint;
     _iceServers: IceServerInfo[] = [];
+    _iceMode: IceMode = 'server';
     _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     _isDestroyed = false;
     _onOpen?: () => void;
@@ -17,8 +18,12 @@ export class SignalingConnection {
         onMessage?: (msg: WsServerMessage) => void;
         onClose?: (ev: CloseEvent) => void;
         onError?: (err: unknown) => void;
+        endpoint?: string;
+        iceMode?: IceMode;
     }) {
         this.info = opts.info ?? null; 
+        this._iceMode = resolveIceMode(opts.iceMode);
+        this.url = resolveSignalingEndpoint(opts.endpoint);
 
         this._onOpen = opts.onOpen;
         this._onMessage = opts.onMessage;
@@ -35,7 +40,20 @@ export class SignalingConnection {
     }
 
     getIceServers(): IceServerInfo[] {
-        return this._iceServers;
+        if (this._iceMode === 'none') {
+            return [];
+        }
+        if (this._iceMode === 'stun') {
+            return [defaultStunServer()];
+        }
+        if (this._iceServers.length > 0) {
+            return this._iceServers;
+        }
+        return [defaultStunServer()];
+    }
+
+    getIceMode(): IceMode {
+        return this._iceMode;
     }
 
     destroy(): void {
@@ -108,10 +126,7 @@ export class SignalingConnection {
     }
 
     private get _endpoint(){
-        //const protocol = location.protocol.startsWith('https') ? 'wss' : 'ws';
-        //const port = '9000';
-        //return `${protocol}://${location.hostname}:${port}/ws`;
-        return "https://apigotesting.onrender.com/ws"
+        return resolveSignalingEndpoint(undefined);
     }
 
     private _isConnected(){
@@ -127,6 +142,69 @@ export class SignalingConnection {
         clearTimeout(this._reconnectTimer);
         this._reconnectTimer = null;
     }
+}
+
+function defaultStunServer(): IceServerInfo {
+    return { urls: ['stun:stun.l.google.com:19302'] };
+}
+
+function resolveSignalingEndpoint(explicit?: string): string {
+    const configured = explicit ?? import.meta.env.VITE_SIGNALING_URL;
+    const cleaned = (configured ?? '').trim();
+
+    if (cleaned) {
+        const normalized = normalizeUrl(cleaned);
+        if (normalized) {
+            return normalized;
+        }
+        console.warn('[Signaling] invalid VITE_SIGNALING_URL, falling back to local endpoint', cleaned);
+    }
+
+    const protocol = location.protocol.startsWith('https') ? 'wss' : 'ws';
+    return `${protocol}://${location.hostname}:9000/ws`;
+}
+
+function normalizeUrl(raw: string): string | null {
+    if (raw.startsWith('ws://') || raw.startsWith('wss://')) {
+        return raw;
+    }
+
+    if (raw.startsWith('http://') || raw.startsWith('https://')) {
+        try {
+            const parsed = new URL(raw);
+            parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+            if (!parsed.pathname || parsed.pathname === '/') {
+                parsed.pathname = '/ws';
+            }
+            return parsed.toString();
+        } catch {
+            return null;
+        }
+    }
+
+    if (!raw.includes('://')) {
+        const prefixed = `ws://${raw}`;
+        try {
+            const parsed = new URL(prefixed);
+            if (!parsed.pathname || parsed.pathname === '/') {
+                parsed.pathname = '/ws';
+            }
+            return parsed.toString();
+        } catch {
+            return null;
+        }
+    }
+
+    return null;
+}
+
+function resolveIceMode(explicit?: IceMode): IceMode {
+    if (explicit) return explicit;
+    const configured = (import.meta.env.VITE_ICE_MODE ?? '').toLowerCase();
+    if (configured === 'none' || configured === 'stun' || configured === 'server') {
+        return configured;
+    }
+    return 'server';
 }
 
 
@@ -178,3 +256,5 @@ export interface IceServerInfo {
     username?: string;
     credential?: string;
 }
+
+export type IceMode = 'server' | 'stun' | 'none';
