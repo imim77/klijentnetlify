@@ -149,22 +149,19 @@ function defaultStunServer(): IceServerInfo {
 }
 
 function resolveSignalingEndpoint(explicit?: string): string {
-    //const configured = explicit ?? import.meta.env.VITE_SIGNALING_URL;
-    //console.log(configured);
-    //const cleaned = (configured ?? '').trim();
+    const configured = explicit ?? import.meta.env.VITE_SIGNALING_URL;
+    const cleaned = (configured ?? '').trim();
 
-    //if (cleaned) {
-        //const normalized = normalizeUrl(cleaned);
-        //if (normalized) {
-            //return normalized;
-        //}
-        //console.warn('[Signaling] invalid VITE_SIGNALING_URL, falling back to local endpoint', cleaned);
-    //}
+    if (cleaned) {
+        const normalized = normalizeUrl(cleaned);
+        if (normalized) {
+            return normalized;
+        }
+        console.warn('[Signaling] invalid VITE_SIGNALING_URL, falling back to local endpoint', cleaned);
+    }
 
-    //const protocol = location.protocol.startsWith('https') ? 'wss' : 'ws';
-    //return `${protocol}://${location.hostname}:9000/ws`;
-    return "https://apigotesting.onrender.com/ws"
-    
+    const protocol = location.protocol.startsWith('https') ? 'wss' : 'ws';
+    return `${protocol}://${location.hostname}:9000/ws`;
 }
 
 function normalizeUrl(raw: string): string | null {

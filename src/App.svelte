@@ -7,8 +7,7 @@
   const localDevice = getAgentInfo(navigator.userAgent);
   const controller = new WebRTCController(localAlias, localDevice);
   const debugIceMode = (import.meta.env.VITE_ICE_MODE || 'server').toLowerCase();
-  //const debugSignalingUrl = import.meta.env.VITE_SIGNALING_URL || `${location.protocol.startsWith('https') ? 'wss' : 'ws'}://${location.hostname}:9000/ws`;
-  const debugSignalingUrl = "https://apigotesting.onrender.com/ws"
+  const debugSignalingUrl = import.meta.env.VITE_SIGNALING_URL || `${location.protocol.startsWith('https') ? 'wss' : 'ws'}://${location.hostname}:9000/ws`;
 
   function sendFiles(peerId: string, event: Event): void {
     const input = event.currentTarget as HTMLInputElement;
