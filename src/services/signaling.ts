@@ -150,6 +150,7 @@ function defaultStunServer(): IceServerInfo {
 
 function resolveSignalingEndpoint(explicit?: string): string {
     const configured = explicit ?? import.meta.env.VITE_SIGNALING_URL;
+    console.log(configured);
     const cleaned = (configured ?? '').trim();
 
     if (cleaned) {
